@@ -958,9 +958,9 @@ const UA = 'pipeworx-mcp-copernicus-cds/1.0 (+https://pipeworx.io)';
 const KEY_HELP =
   'Get one free at cds.climate.copernicus.eu: create an ECMWF account, accept the dataset licences, then copy the Personal Access Token from your profile page.';
 
-async function pwFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+async function pwFetch(url: string | URL, init?: RequestInit, timeoutMs?: number): Promise<Response> {
   const headers = { 'User-Agent': UA, Accept: 'application/json', ...(init?.headers ?? {}) };
-  return fetchWithTimeout(url, { ...init, headers }, 'Copernicus CDS');
+  return fetchWithTimeout(url, { ...init, headers }, 'Copernicus CDS', timeoutMs);
 }
 
 const tools: McpToolExport['tools'] = [
@@ -997,7 +997,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'cds_submit_request',
     description:
-      'Submit a data-retrieval job to the Copernicus Climate Data Store and return the job id and status. Requires your own free CDS Personal Access Token, passed as _apiKey. Use cds_collection first to learn the accepted inputs; CDS jobs are asynchronous — this returns immediately with a job id you poll on cds.climate.copernicus.eu.',
+      'Submit a data-retrieval job to the Copernicus Climate Data Store and return the job id and status. Requires your own free CDS Personal Access Token, passed as _apiKey. Use cds_collection first to learn the accepted inputs; CDS jobs are asynchronous — this returns immediately with a job id. Poll it with cds_job_status (same _apiKey) until it reads "successful", then collect the download link with cds_job_result.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1012,6 +1012,32 @@ const tools: McpToolExport['tools'] = [
         },
       },
       required: ['collection_id', 'inputs', '_apiKey'],
+    },
+  },
+  {
+    name: 'cds_job_status',
+    description:
+      'Check a Copernicus Climate Data Store retrieval job submitted with cds_submit_request. Returns its status (accepted, running, successful, failed or dismissed), timestamps and ready (true only when the data can be collected). Unknown or other-account job id returns found:false. Poll until ready is true, then call cds_job_result. Requires the same _apiKey (your own CDS Personal Access Token) that submitted the job.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        job_id: { type: 'string', description: 'The job id returned by cds_submit_request (job.jobID).' },
+        _apiKey: { type: 'string', description: `Your own Copernicus CDS Personal Access Token (BYO), the one that submitted the job. ${KEY_HELP}` },
+      },
+      required: ['job_id', '_apiKey'],
+    },
+  },
+  {
+    name: 'cds_job_result',
+    description:
+      'Collect the output of a Copernicus Climate Data Store retrieval job: when the job is successful returns the download URL (href) with file type, size in bytes and expiry where the service states them. If the job is not finished it does NOT return an empty result: it returns ready:false with the current status and tells you to poll cds_job_status. A failed job returns its failure reason. Unknown job id returns found:false. Requires the same _apiKey that submitted the job.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        job_id: { type: 'string', description: 'The job id returned by cds_submit_request (job.jobID).' },
+        _apiKey: { type: 'string', description: `Your own Copernicus CDS Personal Access Token (BYO), the one that submitted the job. ${KEY_HELP}` },
+      },
+      required: ['job_id', '_apiKey'],
     },
   },
 ];
@@ -1098,9 +1124,112 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
         source: 'Copernicus Climate Data Store retrieve API (cds.climate.copernicus.eu)',
       };
     }
+    case 'cds_job_status':
+    case 'cds_job_result': {
+      if (!key) {
+        throw new Error(
+          `Copernicus CDS requires an API key to read a retrieval job. Pass the same Personal Access Token that submitted it via _apiKey. ${KEY_HELP}`,
+        );
+      }
+      const jobId = reqStr(args, 'job_id', '"1f2e3d4c-0000-0000-0000-000000000000" (from cds_submit_request)');
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(jobId)) {
+        throw new Error('Argument "job_id" is not a job id. Pass the jobID returned by cds_submit_request, e.g. "1f2e3d4c-0000-0000-0000-000000000000".');
+      }
+      const base = `${RETRIEVE}/jobs/${encodeURIComponent(jobId)}`;
+      const sres = await authedGet(base, key);
+      if (sres.status === 404) {
+        return { found: false, job_id: jobId, note: 'No such job for this token. Check the job id from cds_submit_request and that the same _apiKey is used; CDS also deletes old jobs.', source: SRC };
+      }
+      const sbody = (await readOk(sres)) as Record<string, unknown>;
+      const status = String(sbody.status ?? 'unknown');
+      const ready = status === 'successful';
+      const statusOut = {
+        found: true,
+        job_id: jobId,
+        collection_id: sbody.processID ?? null,
+        status,
+        ready,
+        created: sbody.created ?? null,
+        started: sbody.started ?? null,
+        finished: sbody.finished ?? null,
+        updated: sbody.updated ?? null,
+        source: SRC,
+      };
+      if (name === 'cds_job_status') {
+        return { ...statusOut, next: ready ? 'Call cds_job_result for the download URL.' : TERMINAL.has(status) ? 'Job ended without data; cds_job_result gives the reason.' : 'Not ready: poll cds_job_status again shortly (queue time varies from seconds to hours).' };
+      }
+      if (!ready && !TERMINAL.has(status)) {
+        return { ...statusOut, download: null, next: 'Not ready: there is no result to collect yet. Poll cds_job_status until ready is true, then call cds_job_result again.' };
+      }
+      const rres = await authedGet(`${base}/results`, key);
+      if (rres.status === 404) {
+        return { ...statusOut, download: null, next: ready ? 'The job succeeded but its results are gone (expired). Submit it again.' : 'No result exists for this job.' };
+      }
+      if (!rres.ok) {
+        const t = await rres.text();
+        if (!ready) return { ...statusOut, download: null, failure: summarizeErrorBody(t), next: 'The job did not succeed; revise the request and resubmit.' };
+        throw new Error(`Copernicus CDS: ${rres.status} ${summarizeErrorBody(t)}`);
+      }
+      const rbody = (await rres.json()) as unknown;
+      const asset = findAsset(rbody);
+      if (!asset) {
+        throw new Error('Copernicus CDS reported the job successful but returned no download link in its results; retry cds_job_result shortly.');
+      }
+      return {
+        ...statusOut,
+        download: {
+          href: asset.href,
+          type: asset.type ?? null,
+          size_bytes: asset.size ?? null,
+          expires: asset.expires ?? null,
+        },
+        note: 'The href is the result file itself; fetch it directly (it does not need the token).',
+      };
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+const SRC = 'Copernicus Climate Data Store retrieve API (cds.climate.copernicus.eu)';
+const TERMINAL = new Set(['successful', 'failed', 'dismissed', 'rejected']);
+
+// A job read makes up to two sequential calls (status, then results). Each leg is
+// capped at 11s so both fit inside the gateway's ~25s wall; the 25s default per
+// leg would let the pair run to 50s and the second leg's timeout could never fire.
+const JOB_LEG_TIMEOUT_MS = 11_000;
+function authedGet(url: string, key: string): Promise<Response> {
+  return pwFetch(url, { headers: { 'PRIVATE-TOKEN': key } }, JOB_LEG_TIMEOUT_MS);
+}
+
+async function readOk(res: Response): Promise<unknown> {
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`Copernicus CDS requires an API key and the one supplied was rejected (${res.status}). ${KEY_HELP}`);
+  }
+  if (!res.ok) throw await httpError(res, 'Copernicus CDS');
+  return res.json();
+}
+
+// The results document nests the file under a named asset; find the first
+// object carrying an href rather than trusting one fixed path.
+function findAsset(v: unknown, depth = 0): { href: string; type?: string; size?: number; expires?: string } | null {
+  if (!v || typeof v !== 'object' || depth > 5) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.href === 'string' && o.href) {
+    const size = o['file:size'] ?? o.size ?? o.length;
+    const exp = o.expires ?? o.expiry ?? o['expires_at'];
+    return {
+      href: o.href,
+      type: typeof o.type === 'string' ? o.type : undefined,
+      size: typeof size === 'number' ? size : undefined,
+      expires: typeof exp === 'string' ? exp : undefined,
+    };
+  }
+  for (const k of Object.keys(o)) {
+    const r = findAsset(o[k], depth + 1);
+    if (r) return r;
+  }
+  return null;
 }
 
 interface RawCollection {

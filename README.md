@@ -5,7 +5,7 @@ climate datasets behind ERA5, CMIP6/CORDEX projections, satellite essential
 climate variables and seasonal forecasts — plus the ability to submit a
 retrieval job against any of them.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1875+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1879+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
 
 ## Tools
 
@@ -18,6 +18,11 @@ Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents 
   formats the job will accept. Keyless.
 - `cds_submit_request(collection_id, inputs, _apiKey)` — submit an asynchronous
   retrieval job and return the job id. Needs a caller key.
+- `cds_job_status(job_id, _apiKey)` — status (accepted, running, successful,
+  failed) and timestamps of a submitted job; `found:false` for an unknown id.
+- `cds_job_result(job_id, _apiKey)` — the download link with type, size and
+  expiry once the job is successful; a job still running returns `ready:false`
+  with its status, never an empty result. Same caller key as the submit.
 
 ## Auth
 
@@ -108,7 +113,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1875+ data sources. The
+Both URLs reach the same gateway and the same 1879+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
