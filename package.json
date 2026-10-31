@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-copernicus-cds",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The Copernicus Climate Data Store (C3S/ECMWF) catalogue — browse or search the ~140 published climate datasets behind ERA5 reanalysis, CMIP6 and CORDEX projections, satellite essential climate variables and seasonal forecasts, read exactly what each retrieval accepts, and submit a retrieval job.",
   "type": "module",
   "main": "lib/index.js",
@@ -27,7 +27,7 @@
     "mode": "gateway",
     "slug": "copernicus-cds",
     "gatewaySlug": "copernicus-cds",
-    "sourceHash": "v1-6e9a33fe8fb5324290cc84d3a4ab8ae1a8e541b929ed1c10f094f40013c894f7",
-    "sourceCommit": "4277282d72f9bf55e548b3799aaf737baf22152f"
+    "sourceHash": "v1-d849f3497f2031f2acfd2ce4724a0a7fe245d3ab1dceff79b7bae5036de5ce5a",
+    "sourceCommit": "8cc978183948532674e797c429305c9d8ab2a1c3"
   }
 }
